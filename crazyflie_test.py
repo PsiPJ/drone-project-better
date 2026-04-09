@@ -12,6 +12,10 @@ kp_z = 2.0
 kd_z = 1.0
 target_z = 0.1
 
+target_roll = 0.0
+target_pitch = 0.0
+target_yaw = 0.0
+
 model = mujoco.MjModel.from_xml_path("mujoco_menagerie/bitcraze_crazyflie_2/scene.xml")
 data = mujoco.MjData(model)
 
@@ -30,9 +34,9 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         thrust = HOVER_THRUST + kp_z * (target_z - z) - kd_z * vz
 
         # --- Orientation control (small-angle approx) ---
-        roll_error  = quat[1]
-        pitch_error = quat[2]
-        yaw_error   = quat[3]
+        roll_error  = quat[1] - target_roll
+        pitch_error = quat[2] - target_pitch
+        yaw_error   = quat[3] - target_yaw
 
         roll_torque  = -kp_angle * roll_error  - kd_angle * ang_vel[0]
         pitch_torque = -kp_angle * pitch_error - kd_angle * ang_vel[1]
