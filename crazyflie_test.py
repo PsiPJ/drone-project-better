@@ -10,11 +10,26 @@ kd_angle = 0.15
 
 kp_z = 2.0
 kd_z = 1.0
+
+kp_xy = 1.0
+kd_xy = 0.5
+
+target_x = 0.0
+target_y = 0.1
 target_z = 0.1
 
+
+# Change these Values to test direction control
 target_roll = 0.0
 target_pitch = 0.0
 target_yaw = 0.0
+
+# Move Forward: target_pitch = -0.1
+# Move Backward: target_pitch = 0.1
+# Move Left: target_roll = -0.1
+# Move Right: target_roll = 0.1
+# Rotate Left: target_yaw = 0.1
+# Rotate Right: target_yaw = -0.1
 
 model = mujoco.MjModel.from_xml_path("mujoco_menagerie/bitcraze_crazyflie_2/scene.xml")
 data = mujoco.MjData(model)
@@ -27,11 +42,21 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         quat = data.sensor("body_quat").data
         ang_vel = data.sensor("body_gyro").data
 
+        x = data.qpos[0]
+        vx = data.qvel[0]
+
+        y = data.qpos[1]
+        vy = data.qvel[1]
+        
         z = data.qpos[2]
         vz = data.qvel[2]
 
         # --- Height control ---
         thrust = HOVER_THRUST + kp_z * (target_z - z) - kd_z * vz
+        
+        # --- Postion control ---
+        target_pitch = - (kp_xy * (target_x - x) - kd_xy * vx)
+        target_roll  =   (kp_xy * (target_y - y) - kd_xy * vy)
 
         # --- Orientation control (small-angle approx) ---
         roll_error  = quat[1] - target_roll
