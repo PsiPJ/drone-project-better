@@ -3,102 +3,149 @@ import numpy as np
 import mujoco.viewer
 import time
 
-model = mujoco.MjModel.from_xml_path("mujoco_menagerie/bitcraze_crazyflie_2/scene.xml")
+# ============================================================
+# 🧠 NEURAL NETWORK IMPORTS
+# ============================================================
+# PyTorch is used here to define a neural network policy
+# that will eventually replace or augment the hand-written controller.
+import torch
+import torch.nn as nn
+
+
+# ============================================================
+# 🧠 NEURAL NETWORK POLICY (DRONE BRAIN)
+# ============================================================
+# This is a simple feedforward neural network.
+# Input: drone state (position, velocity, orientation, etc.)
+# Output: control signals (thrust, roll, pitch, yaw)
+
+class DronePolicy(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # Fully connected neural network
+        self.net = nn.Sequential(
+            nn.Linear(17, 64),   # input: state vector (17 values)
+            nn.ReLU(),           # nonlinearity
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 4),    # output: 4 control signals
+            nn.Tanh()            # outputs bounded between [-1, 1]
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+# ============================================================
+# 🧠 LOAD MUJOCO SIMULATION
+# ============================================================
+# This loads the Crazyflie drone simulation model.
+model = mujoco.MjModel.from_xml_path(
+    "mujoco_menagerie/bitcraze_crazyflie_2/scene.xml"
+)
 data = mujoco.MjData(model)
+
+# Create neural network policy instance
+policy = DronePolicy()
+policy.eval()  # sets network to inference mode (no training behavior)
+
+
+# ============================================================
+# 🧠 MAIN SIMULATION LOOP
+# ============================================================
+# This loop continuously:
+# 1. reads sensors
+# 2. computes control actions
+# 3. applies them to the drone
+# 4. advances simulation
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
     while viewer.is_running():
+
         step_start = time.time()
-        quat = data.sensor("body_quat").data
-        ang_vel = data.sensor("body_gyro").data
 
-        #-- Translational States (Where is it in the real World) -- 
-        current_position = data.qpos[:3] # [x,y,z] 
-        current_velocity = data.qvel[:3] # [vx,vy,vz] 
+        # ====================================================
+        # 📡 SENSOR READINGS (REAL-TIME DRONE STATE)
+        # ====================================================
 
-        #-- Rotational States (How is it Tilted? = Attitude) -- 
-        attitude_quat = data.sensor("body_quat").data # [w,x,y,z] 
-        angular_velocity = data.sensor("body_gyro").data # [wx,wy,wz] 
+        # Position in world frame (x, y, z)
+        current_position = data.qpos[:3]
 
-        #-- Position Control (Where do we want to be?) -- HOW 
+        # Linear velocity in world frame (vx, vy, vz)
+        current_velocity = data.qvel[:3]
 
-        # Current Pos and Vel 
-        x_pos, y_pos, z_pos = current_position
-        x_vel, y_vel, z_vel = current_velocity
+        # Orientation as quaternion (w, x, y, z)
+        attitude_quat = data.sensor("body_quat").data
 
-        # USER DEFINED TARGETS
-        target_x, target_y, target_z = 0.8, 0, 1.0 #Hover at 1m 
-        target_yaw = 0.0 # No Rotation 
-        goal_yaw = target_yaw
+        # Angular velocity (rotation speed around axes)
+        angular_velocity = data.sensor("body_gyro").data
 
-        # Constants (Gains)
-        kp_z, kd_z = 10.0, 5.0      # Height tuning
-        kp_xy, kd_xy = 2.0, 0.8     # Position tuning (increased)
-        kp_angle, kd_angle = 0.3, 0.1 # Tilt tuning (increased)
 
-        # --- HEIGHT CONTROL (thrust) ---
-        # Goal: Adjust thrust to reach target_z and stop vertical drifting (z_vel)
-        
-        HOVER_THRUST = 0.26487 # Constant needed to fight Gravity 
-        thrust_action = HOVER_THRUST + kp_z * (target_z - z_pos) - kd_z * z_vel
-        thrust_action = max(0.0, min(thrust_action, 1.0))  # Clamp thrust
+        # ====================================================
+        # 🎯 USER-DEFINED GOAL
+        # ====================================================
+        # This is where you tell the drone what "success" means.
 
-        # --- ATTITUDE CONTROL (Stabilization) ---
-        # Quaternion to Roll, Pitch, Yaw conversion 
-        mat = np.zeros(9)
-        mujoco.mju_quat2Mat(mat, attitude_quat)
+        target_x, target_y, target_z = 0.8, 0.0, 1.0
+        goal_yaw = 0.0
 
-        # rotation matrix → Euler (ZYX)
-        R = mat.reshape(3,3)
 
-        current_roll  = np.arctan2(R[2,1], R[2,2])
-        current_pitch = -np.arcsin(R[2,0])
-        current_yaw   = np.arctan2(R[1,0], R[0,0])
+        # ====================================================
+        # 🧠 BUILD STATE VECTOR FOR NEURAL NETWORK
+        # ====================================================
+        # The neural network needs everything in one vector.
 
-        # --- TRANSLATIONAL CONTROL (x,y) - tilt ---
-        # Goal: Decide how much to lean to get to the target (x,y).
-        # Note: In MuJoCo's coordinate system for this drone:
-        # To move +X (Forward), we need a negative Pitch.
-        # To move +Y (Left), we need a positive Roll.
+        state = np.concatenate([
+            current_position,     # where drone is
+            current_velocity,     # how it's moving
+            attitude_quat,        # orientation
+            angular_velocity,     # rotation speed
+            np.array([target_x, target_y, target_z, goal_yaw])
+        ])
 
-        MAX_TILT_ANGLE = 0.2
 
-        # Position error in world frame
-        x_error = target_x - x_pos
-        y_error = target_y - y_pos
+        # ====================================================
+        # 🧠 CONVERT STATE → TENSOR (FOR PYTORCH)
+        # ====================================================
+        # Neural networks only understand tensors.
 
-        # Rotate error into body frame
-        cos_yaw = np.cos(current_yaw)
-        sin_yaw = np.sin(current_yaw)
+        state_tensor = torch.tensor(state, dtype=torch.float32)
 
-        x_body_error =  cos_yaw * x_error + sin_yaw * y_error
-        y_body_error = -sin_yaw * x_error + cos_yaw * y_error
 
-        # Rotate velocity into body frame (FIXED)
-        x_body_vel =  cos_yaw * x_vel + sin_yaw * y_vel
-        y_body_vel = -sin_yaw * x_vel + cos_yaw * y_vel
+        # ====================================================
+        # 🧠 NEURAL NETWORK FORWARD PASS
+        # ====================================================
+        # The policy predicts control outputs from the state.
 
-        raw_pitch = -(kp_xy * x_body_error + kd_xy * x_body_vel)
-        raw_roll  =  (kp_xy * y_body_error + kd_xy * y_body_vel)
+        nn_action = policy(state_tensor).detach().numpy()
 
-        goal_pitch = max(min(raw_pitch, MAX_TILT_ANGLE), -MAX_TILT_ANGLE)
-        goal_roll  = max(min(raw_roll, MAX_TILT_ANGLE), -MAX_TILT_ANGLE)
+        # Convert network output to usable control signals
 
-        # Calculate Angle Errors
-        roll_error  = goal_roll  - current_roll
-        pitch_error = goal_pitch - current_pitch
-        yaw_error   = goal_yaw   - current_yaw   # FIXED
+        thrust_action = (nn_action[0] + 1) / 2  # scale [-1,1] → [0,1]
+        roll_action   = nn_action[1]
+        pitch_action  = nn_action[2]
+        yaw_action    = nn_action[3]
 
-        roll_torque_action  = -kp_angle * roll_error  - kd_angle * angular_velocity[0]
-        pitch_torque_action = -kp_angle * pitch_error - kd_angle * angular_velocity[1]
-        yaw_torque_action   = -kp_angle * yaw_error   - kd_angle * angular_velocity[2]
 
-        # EXECUTE THE ACTIONS  
-        data.ctrl[:] = [thrust_action, roll_torque_action, pitch_torque_action, yaw_torque_action]
-        
+        # ====================================================
+        # ⚙️ APPLY CONTROL INPUTS TO DRONE
+        # ====================================================
+        # These directly control the physics simulation.
 
+        data.ctrl[:] = [
+            thrust_action,
+            roll_action,
+            pitch_action,
+            yaw_action
+        ]
+
+
+        # ====================================================
+        # ⏱ STEP SIMULATION FORWARD
+        # ====================================================
         mujoco.mj_step(model, data)
         viewer.sync()
 
-        # Real-time synchronization
+        # Keep simulation real-time (prevents speed-up/slow-down)
         time.sleep(max(0, model.opt.timestep - (time.time() - step_start)))
