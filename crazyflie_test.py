@@ -32,9 +32,9 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         goal_yaw = target_yaw
 
         # Constants (Gains)
-        kp_z, kd_z = 10.0, 5.0      # Height tuning
-        kp_xy, kd_xy = 2.0, 0.8     # Position tuning (increased)
-        kp_angle, kd_angle = 0.3, 0.1 # Tilt tuning (increased)
+        kp_z, kd_z = 8.0, 4.0          # Keep height strong and stable
+        kp_xy, kd_xy = 0.5, 1.2        # A patient brain: gentle acceleration and strong brakes
+        kp_angle, kd_angle = 5.0, 0.4  # Lightning-fast muscles: snap to angles instantly
 
         # --- HEIGHT CONTROL (thrust) ---
         # Goal: Adjust thrust to reach target_z and stop vertical drifting (z_vel)
@@ -61,7 +61,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         # To move +X (Forward), we need a negative Pitch.
         # To move +Y (Left), we need a positive Roll.
 
-        MAX_TILT_ANGLE = 0.2
+        MAX_TILT_ANGLE = 0.12
 
         # Position error in world frame
         x_error = target_x - x_pos
@@ -78,6 +78,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         x_body_vel =  cos_yaw * x_vel + sin_yaw * y_vel
         y_body_vel = -sin_yaw * x_vel + cos_yaw * y_vel
 
+        # Add a velocity target of zero. Instead of just penalizing current velocity, explicitly demand the drone be stationary at the target::
         raw_pitch = -(kp_xy * x_body_error + kd_xy * x_body_vel)
         raw_roll  =  (kp_xy * y_body_error + kd_xy * y_body_vel)
 
