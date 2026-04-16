@@ -107,25 +107,36 @@ class FireDroneEnv(gym.Env):
             # If fire is extinguished
             if fire.is_out():
                 print(f"💨 FIRE {i} EXTINGUISHED")
+                # ============================================================
+        # 📡 DRONE POSITION DEBUG RELATIVE TO FIRE
         # ============================================================
-        # 🎨 SYNC VISUAL STATE WITH LOGIC STATE
-        # ============================================================
+
+        for i, fire in enumerate(self.fires):
+            dist = np.linalg.norm(drone_pos - fire.position)
+
+            print(f"   → Fire {i} distance: {dist:.3f}")
+                # ============================================================
+                # 🎨 SYNC VISUAL STATE WITH LOGIC STATE
+                # ============================================================
         for i, fire in enumerate(self.fires):
             self.fire_visual_intensity[i] = fire.intensity
 
 # ============================================================
-# 🔥 DEBUG: FIRE STATUS (CONTROLLED OUTPUT)
+# 🔥 DEBUG: FIRE STATUS + DISTANCE (COMBINED LINE)
 # ============================================================
+# This prints BOTH:
+# - fire intensity (how alive it is)
+# - distance from drone (interaction signal)
+# in one compact readable line.
+
         if self.debug and self.step_count % self.debug_every == 0:
 
             status = " | ".join(
-                f"F{i}: {fire.intensity:.2f}"
+                f"F{i}: I={fire.intensity:.2f} D={np.linalg.norm(drone_pos - fire.position):.3f}"
                 for i, fire in enumerate(self.fires)
             )
 
-            print(
-                f"[STEP {self.step_count}] FIRE STATUS → {status}"
-            )
+            print(f"[STEP {self.step_count}] FIRE STATUS → {status}")
 
         # ====================================================
         # 🎯 REWARD FUNCTION
