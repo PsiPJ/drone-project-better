@@ -83,6 +83,18 @@ class FireDroneEnv(gym.Env):
         # ====================================================
         for fire in self.fires:
             fire.update(drone_pos)
+            
+        # ============================================================
+        # 🔥 DEBUG: FIRE STATUS PRINTING
+        # ============================================================
+        # This lets us see if fire is actually being extinguished.
+
+        for i, fire in enumerate(self.fires):
+            print(
+                f"[FIRE {i}] pos={fire.position} "
+                f"intensity={fire.intensity:.3f} "
+                f"distance={np.linalg.norm(drone_pos - fire.position):.3f}"
+    )
 
         # ====================================================
         # 🎯 REWARD FUNCTION
