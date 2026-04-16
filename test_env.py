@@ -25,7 +25,7 @@ obs, info = env.reset()
 
 with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
 
-    for step in range(1000):
+    for step in range(200):
 
         action = np.random.uniform(-1, 1, size=(4,)).astype(np.float32)
 
