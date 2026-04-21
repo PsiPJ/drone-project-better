@@ -59,4 +59,30 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         state_tensor - torch.FloatTensor(state)   #Now we need to convert this numpy array into a torch tensor so we can feed it into our neural network.  Pytorch refuses to read numpy arrays.
         #BOOO PYTORCH, we demand respect for NUMPY people. LOL
 
+        with torch.no_grad():   #This is saying we dont need to calculate gradients for this part, since we are just doing inference, not training. So bascially I am saving everyones CPU from overheating since this uses large amounts of CPU power
+            raw_action = policy(state_tensor).numpy() # We send the array data to the brain of the policy and then have that result stored as a numpy array for better data analysis
         
+        thrust = raw_action[0] * .35  #Our range of the thrust of the drone is listed in the xml and is limited to 0 to 0.35 so we multiply by 0.35 to ensure that it does nto break the upper bounds of the drone
+        #Due to the sigmoid function we used in the setup, raw action is between 0 to 1
+
+        #--- Pitch, Roll, Yaw--- The variables are not moms btw. The properties Pitch Roll and Yaw ar ebetween -1,1 so hence do this to keep the values between as so
+        x_mom = (raw_action[1]-2.0)-1.0
+        y_mom = (raw_action[2]-2,0)-1.0
+        z_mom = (raw_action[3]-2.0)-1.0
+
+        # data.ctrl is MuJoCo's dedicated list for actuator inputs. We overwrite the current values in that list with the newly calculated commands from our neural network.
+        data.ctrl[0] = thrust
+        data.ctrl[1] = x_mom
+        data.ctrl[2] = y_mom
+        data.ctrl[3] = z_mom
+
+        #We tell the physics engine: "Take the current state (data), apply the new motor forces (data.ctrl), calculate gravity, check if the drone hit the floor, and move time forward by 0.002 seconds."
+        mujoco.mj_step(model, data)
+        
+        # Sync the viewer to update the visuals
+        viewer.sync()
+
+        # Try to roughly match the physics timestep (usually 0.002s)
+        time_until_next_step = model.opt.timestep - (time.time() - step_start)
+        if time_until_next_step > 0:
+            time.sleep(time_until_next_step)
