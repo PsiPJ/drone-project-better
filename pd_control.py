@@ -24,10 +24,13 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+
 # Default scene path: same folder layout as this repo (mujoco_menagerie/.../scene.xml)
 _SCENE = Path(__file__).resolve().parent / "mujoco_menagerie" / "bitcraze_crazyflie_2" / "scene.xml"
 HOVER_THRUST = 0.26487  # matches cf2.xml keyframe hover ctrl
 GRAVITY = 9.81
+
+
 
 
 @dataclass
@@ -56,8 +59,8 @@ class PDState:
 
 @dataclass
 class Setpoint:
-    x: float = 0.8
-    y: float = 0.0
+    x: float = 1.0
+    y: float = 2.0
     z: float = 1.0
     yaw: float = 0.0
 
