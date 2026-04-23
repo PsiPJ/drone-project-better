@@ -7,6 +7,8 @@ import torch.optim as optim
 from pathlib import Path
 import mujoco
 import mujoco.viewer
+import csv
+import os
 
 from pid_control import compute_pid_control, PIDGains, PIDState, Setpoint
 
@@ -23,6 +25,17 @@ LR = 3e-4
 
 ACTION_SCALE = 0.3
 
+MIN_STEPS_BEFORE_CRASH = 100
+
+# ── SUCCESS SETTINGS ──
+TARGET_THRESHOLD = 0.05
+HOVER_TIME_REQUIRED = 3.0  # seconds
+
+# Logging / saving
+LOG_FILE = Path("training_log.csv")
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
+
 # ─────────────────────────────────────────────
 # Policy Network
 # ─────────────────────────────────────────────
@@ -31,13 +44,12 @@ class Policy(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(17, 128),
+            nn.Linear(14, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
         )
         self.mean = nn.Linear(128, 4)
-
         self.log_std = nn.Parameter(torch.full((4,), -0.5))
 
     def forward(self, x):
@@ -59,10 +71,11 @@ def get_obs(data: mujoco.MjData, sp: Setpoint):
     vel = data.qvel[:3] / 5.0
 
     quat = data.sensor("body_quat").data
-    gyro = data.sensor("body_gyro").data / 10.0
+    # gyro = data.sensor("body_gyro").data / 10.0
 
     return np.concatenate([
-        pos, vel, quat, gyro,
+        pos, vel, quat,
+        # gyro,
         np.array([sp.x, sp.y, sp.z, sp.yaw], dtype=np.float32) / 2.0
     ]).astype(np.float32)
 
@@ -92,6 +105,16 @@ def compute_reward(data: mujoco.MjData, sp: Setpoint, action):
 
 
 # ─────────────────────────────────────────────
+# Save model
+# ─────────────────────────────────────────────
+
+def save_model(policy, episode):
+    torch.save(policy.state_dict(), CHECKPOINT_DIR / "latest.pt")
+    if episode % 50 == 0:
+        torch.save(policy.state_dict(), CHECKPOINT_DIR / f"episode_{episode}.pt")
+
+
+# ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
 
@@ -105,7 +128,14 @@ def main():
 
     gains = PIDGains()
 
-    # IMPORTANT: viewer wraps full training loop
+    timestep = model.opt.timestep
+    hover_steps_required = int(HOVER_TIME_REQUIRED / timestep)
+
+    if not LOG_FILE.exists():
+        with open(LOG_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["episode", "reward", "steps"])
+    print("TIMESTEP:", model.opt.timestep)
     with mujoco.viewer.launch_passive(model, data) as viewer:
 
         for episode in range(NUM_EPISODES):
@@ -133,9 +163,11 @@ def main():
 
             obs = get_obs(data, sp)
 
+            # ── SUCCESS TRACKING ──
+            success_counter = 0
+
             for t in range(EPISODE_LENGTH):
 
-                # ── viewer update ──
                 viewer.sync()
 
                 obs_t = torch.tensor(obs, dtype=torch.float32)
@@ -147,7 +179,7 @@ def main():
                 log_prob = dist.log_prob(u_nn).sum()
 
                 u_pid = compute_pid_control(
-                    data, sp, gains, model.opt.timestep, state=state
+                    data, sp, gains, timestep, state=state
                 )
 
                 action = u_pid + ACTION_SCALE * u_nn.detach().numpy()
@@ -158,7 +190,24 @@ def main():
 
                 reward = compute_reward(data, sp, action)
 
-                if data.qpos[2] < 0.05 and t > 20:
+                # ── SUCCESS CONDITION (hover stability) ──
+                pos = data.qpos[:3]
+                target = np.array([sp.x, sp.y, sp.z])
+                pos_err = np.linalg.norm(pos - target)
+
+                if pos_err < TARGET_THRESHOLD:
+                    success_counter += 1
+                else:
+                    success_counter = 0
+
+                if success_counter >= hover_steps_required:
+                    reward += 20.0
+                    log_probs.append(log_prob)
+                    rewards.append(reward)
+                    break
+
+                # ── CRASH CONDITION ──
+                if pos[2] < 0.05 and t > MIN_STEPS_BEFORE_CRASH:
                     reward -= 50.0
                     log_probs.append(log_prob)
                     rewards.append(reward)
@@ -185,13 +234,21 @@ def main():
 
             loss = 0
             for log_prob, G in zip(log_probs, returns):
-                loss += -log_prob * G
+                loss += -log_prob * G # REINFORCE loss
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            print(f"Episode {episode:04d} | Reward: {sum(rewards):8.2f} | Steps: {len(rewards)}")
+            total_reward = sum(rewards)
+
+            save_model(policy, episode)
+
+            with open(LOG_FILE, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([episode, total_reward, len(rewards)])
+
+            print(f"Episode {episode:04d} | Reward: {total_reward:8.2f} | Steps: {len(rewards)}")
 
 
 if __name__ == "__main__":
