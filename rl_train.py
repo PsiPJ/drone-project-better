@@ -23,9 +23,12 @@ LR = 3e-4
 CLIP_EPS = 0.2
 PPO_EPOCHS = 4
 
-ACTION_SCALE = 0.2
+ACTION_SCALE = 0.15   # ↓ slightly reduced again for stability
 EPISODE_SECONDS = 8.0
 TARGET_THRESHOLD = 0.05
+
+# action smoothing (KEY FIX)
+ACTION_SMOOTH = 0.85
 
 
 # ─────────────────────────────────────────────
@@ -43,14 +46,18 @@ class Policy(nn.Module):
         )
 
         self.mean = nn.Linear(128, 4)
-        self.log_std = nn.Parameter(torch.full((4,), -0.5))
 
-    def forward(self, x):
+        # start higher noise but we anneal it manually later
+        self.log_std = nn.Parameter(torch.full((4,), -0.3))
+
+    def forward(self, x, step_frac=1.0):
         x = self.net(x)
         mean = self.mean(x)
 
-        # smoother exploration
-        std = torch.exp(torch.clamp(self.log_std, -2, 0.5))
+        # 🔥 anneal exploration over training
+        log_std = self.log_std - 1.5 * (1.0 - step_frac)
+        std = torch.exp(torch.clamp(log_std, -3, 0.2))
+
         return mean, std
 
 
@@ -89,7 +96,7 @@ def get_obs(data: mujoco.MjData, sp: Setpoint):
 
 
 # ─────────────────────────────────────────────
-# STABILITY-FOCUSED REWARD (FIXED)
+# STABILITY-FOCUSED REWARD (MORE AGGRESSIVE STABILITY)
 # ─────────────────────────────────────────────
 
 def compute_reward(data: mujoco.MjData, sp: Setpoint, action, prev_action=None):
@@ -99,18 +106,18 @@ def compute_reward(data: mujoco.MjData, sp: Setpoint, action, prev_action=None):
     target = np.array([sp.x, sp.y, sp.z])
     pos_err = np.linalg.norm(pos - target)
 
-    # 🔥 prioritize stability over tracking
-    reward = -0.3 * pos_err
-    reward -= 0.6 * np.linalg.norm(vel)   # STRONG damping (key fix)
-    reward -= 0.03 * np.linalg.norm(action)
+    # stronger stability bias
+    reward = -0.25 * pos_err
+    reward -= 0.8 * np.linalg.norm(vel)         # stronger damping (important fix)
+    reward -= 0.02 * np.linalg.norm(action)
 
-    # jitter suppression (important for shake)
+    # jitter suppression (still important but not dominant)
     if prev_action is not None:
-        reward -= 0.4 * np.linalg.norm(action - prev_action)
+        reward -= 0.35 * np.linalg.norm(action - prev_action)
 
-    # stable hover bonus
-    if pos_err < TARGET_THRESHOLD and np.linalg.norm(vel) < 0.05:
-        reward += 1.2
+    # stable hover reward
+    if pos_err < TARGET_THRESHOLD and np.linalg.norm(vel) < 0.04:
+        reward += 1.5
 
     # crash penalty
     if pos[2] < 0.2:
@@ -137,10 +144,14 @@ def main():
     )
 
     gains = PIDGains()
+
     timestep = model.opt.timestep
     max_steps = int(EPISODE_SECONDS / timestep)
 
     episode_rewards = []
+
+    global_step = 0
+    total_steps = NUM_EPISODES * max_steps
 
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -169,7 +180,7 @@ def main():
                 reward_buf, value_buf = [], []
 
                 obs = get_obs(data, sp)
-                prev_action = None
+                prev_action = np.zeros(4, dtype=np.float32)
 
                 for t in range(max_steps):
 
@@ -177,12 +188,17 @@ def main():
 
                     obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
-                    mean, std = policy(obs_t)
+                    step_frac = global_step / total_steps
+                    mean, std = policy(obs_t, step_frac)
+
                     dist = torch.distributions.Normal(mean, std)
 
-                    action_delta = torch.tanh(dist.sample()).squeeze(0) * ACTION_SCALE
+                    raw_action = dist.sample()
+                    action_delta = torch.tanh(raw_action).squeeze(0) * ACTION_SCALE
 
-                    log_prob = dist.log_prob(action_delta / ACTION_SCALE).sum()
+                    # correct PPO logprob (important)
+                    log_prob = dist.log_prob(raw_action).sum()
+
                     value = value_fn(obs_t).squeeze(0)
 
                     sp_rl = np.array([sp.x, sp.y, sp.z, sp.yaw]) + action_delta.detach().cpu().numpy()
@@ -193,21 +209,25 @@ def main():
                     )
 
                     action = np.clip(u_pid, [0, -1, -1, -1], [1, 1, 1, 1])
+
+                    # 🔥 ACTION LOW-PASS FILTER (MAIN STABILITY FIX)
+                    action = ACTION_SMOOTH * prev_action + (1 - ACTION_SMOOTH) * action
+                    prev_action = action.copy()
+
                     data.ctrl[:] = action
 
                     mujoco.mj_step(model, data)
 
                     reward = compute_reward(data, sp, action, prev_action)
 
-                    prev_action = action.copy()
-
                     obs_buf.append(obs)
-                    act_buf.append(action_delta)
+                    act_buf.append(raw_action)
                     logp_buf.append(log_prob)
                     reward_buf.append(reward)
                     value_buf.append(value)
 
                     obs = get_obs(data, sp)
+                    global_step += 1
 
                 # ─────────────────────────────
                 # PPO UPDATE
@@ -234,7 +254,7 @@ def main():
                     mean, std = policy(obs_t)
                     dist = torch.distributions.Normal(mean, std)
 
-                    new_logp = dist.log_prob(act_t / ACTION_SCALE).sum(dim=1)
+                    new_logp = dist.log_prob(act_t).sum(dim=1)
 
                     ratio = torch.exp(new_logp - old_logp)
 
@@ -267,7 +287,7 @@ def main():
 
             plt.xlabel("Episode")
             plt.ylabel("Reward")
-            plt.title("Training Progress (Stable Control)")
+            plt.title("Training Progress (Stabilized Flight)")
             plt.legend()
             plt.grid()
 
