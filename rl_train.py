@@ -19,7 +19,7 @@ SCENE = Path(__file__).resolve().parent / "mujoco_menagerie" / "bitcraze_crazyfl
 
 NUM_EPISODES = 5000
 GAMMA = 0.99
-LR = 3e-4
+LR = 1e-4
 CLIP_EPS = 0.2
 PPO_EPOCHS = 4
 
@@ -110,6 +110,7 @@ def compute_reward(data: mujoco.MjData, sp: Setpoint, action, prev_action=None):
     reward = -0.25 * pos_err
     reward -= 0.8 * np.linalg.norm(vel)         # stronger damping (important fix)
     reward -= 0.02 * np.linalg.norm(action)
+    reward = np.clip(reward, -5.0, 3.0)
 
     # jitter suppression (still important but not dominant)
     if prev_action is not None:
@@ -194,10 +195,11 @@ def main():
                     dist = torch.distributions.Normal(mean, std)
 
                     raw_action = dist.sample()
+                    
                     action_delta = torch.tanh(raw_action).squeeze(0) * ACTION_SCALE
 
                     # correct PPO logprob (important)
-                    log_prob = dist.log_prob(raw_action).sum()
+                    log_prob = dist.log_prob(raw_action).sum(dim=-1).squeeze()
 
                     value = value_fn(obs_t).squeeze(0)
 
@@ -221,7 +223,7 @@ def main():
                     reward = compute_reward(data, sp, action, prev_action)
 
                     obs_buf.append(obs)
-                    act_buf.append(raw_action)
+                    act_buf.append(raw_action.squeeze(0))
                     logp_buf.append(log_prob)
                     reward_buf.append(reward)
                     value_buf.append(value)
